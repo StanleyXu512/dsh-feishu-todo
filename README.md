@@ -42,13 +42,24 @@ DSH（DeepSeek Harness）插件：**读取飞书群聊消息，用 AI 自动识�
 - Node.js ≥ 18
 - 一个**飞书自建应用**（见下方「飞书应用配置」）
 
-### 安装插件（二选一）
+### 安装插件
 
-**方式 A：本地目录开发安装（推荐，源码即改即生效）**
+**方式 A：从 GitHub 直接安装（其他电脑 / 最快）**
+
+```bash
+dsh plugin --profile web add github:StanleyXu512/dsh-feishu-todo
+# 重启 DSH
+```
+
+> - 首次安装会克隆仓库并拉取依赖，约 3–5 分钟
+> - 仓库为**公开**时任何电脑可直接安装；若为**私有**，对方电脑需先配置可访问该仓库的 SSH key
+> - 安装后插件自动进入 profile 的 `bundles` 清单，启动时按包内 `cordis.patch.yml` 完成自注册（宿主 + Web 双子面）
+
+**方式 B：克隆源码 + link（本机开发推荐，源码即改即生效）**
 
 ```bash
 # 1. 克隆本仓库到本地
-git clone https://github.com/<你的用户名>/<本仓库>.git ~/Work/code/dsh-plugin/feishu-todo
+git clone https://github.com/StanleyXu512/dsh-feishu-todo.git ~/Work/code/dsh-plugin/feishu-todo
 cd ~/Work/code/dsh-plugin/feishu-todo
 npm install        # 安装运行时依赖（schemastery / dsh-settings）
 
@@ -56,13 +67,6 @@ npm install        # 安装运行时依赖（schemastery / dsh-settings）
 dsh plugin --profile web add link:~/Work/code/dsh-plugin/feishu-todo
 
 # 3. 重启 DSH
-```
-
-**方式 B：npm 包安装（发布到 registry 后）**
-
-```bash
-dsh plugin --profile web add dsh-feishu-todo
-# 重启 DSH
 ```
 
 > 插件通过 `dsh.bundle.patch`（仓库内 `cordis.patch.yml`）自动把双面插件行注入 profile 树，无需手动改 profile 配置。
