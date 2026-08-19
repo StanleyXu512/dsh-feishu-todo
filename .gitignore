@@ -1,0 +1,16 @@
+node_modules/
+*.log
+.DS_Store
+
+# 本地配置与数据（含密钥，不入库）
+feishu-todo.json
+feishu-todo-data.json
+~/.dsh/feishu-todo.json
+~/.dsh/feishu-todo-data.json
+
+# 测试产物
+test/fixtures/*.generated.json
+
+# 本地 pnpm 缓存与测试目录
+.pnpm-store/
+.feishu-todo/

@@ -1,0 +1,9 @@
+# dsh-feishu-todo bundle patch：把双面插件行插入 web profile roster。
+# 作为 profile bundle 层应用（package.json 的 dsh.bundle.patch 清单字段）。
+# 安装：dsh plugin --profile <name> add link:~/Work/code/dsh-plugin/feishu-todo
+# 该行是「按包名」的裸插件行：node 半边（exports "."）运行在宿主进程（飞书引擎、
+# /api/feishu-todo 路由），package.json 的 dsh.client 声明让浏览器半边
+# （exports "./client"，served at /plugins/<id>/client.js）加载进 web GUI。
+- insert:
+    - id: feishu-todo
+      name: 'dsh-feishu-todo'
