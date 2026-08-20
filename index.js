@@ -619,6 +619,38 @@ function applyTodoUpdate(data, todo, changes) {
   return next
 }
 
+/**
+ * 识别后已读保留（兜底）：LLM 每次提取的描述措辞可能漂移 → key 变化 → 旧已读标记匹配不上。
+ * 对每个新待办：若旧 todoSeen 中有「同群 + 归一化文本互相包含」的已读记录，补标已读，
+ * 避免「同步识别后已读变未读」。精确命中（含合并迁移后的）直接跳过。
+ */
+function migrateSeenBySimilarity(data, newTodos) {
+  const seen = data.todoSeen && typeof data.todoSeen === 'object' ? data.todoSeen : {}
+  if (!seen || typeof seen !== 'object') return
+  const seenKeys = Object.keys(seen)
+  if (!seenKeys.length || !Array.isArray(newTodos) || !newTodos.length) return
+  let changed = false
+  for (const t of newTodos) {
+    const k = todoKey(t)
+    if (seen[k]) continue // 已精确命中（或其合并来源迁移过）
+    const sp = k.indexOf('::')
+    if (sp < 0) continue
+    const chatId = k.slice(0, sp)
+    const norm = k.slice(sp + 2)
+    if (!norm) continue
+    const hit = seenKeys.some((sk) => {
+      const s = sk.indexOf('::')
+      if (s < 0) return false
+      if (sk.slice(0, s) !== chatId) return false
+      const sn = sk.slice(s + 2)
+      if (!sn) return false
+      return sn.includes(norm) || norm.includes(sn)
+    })
+    if (hit) { seen[k] = true; changed = true }
+  }
+  if (changed) saveData(DATA_PATH(), data)
+}
+
 async function doTodos(refreshFirst) {
   if (refreshFirst) await doSync()
   const cfg = fullConfig()
@@ -697,6 +729,8 @@ async function doTodos(refreshFirst) {
   }
 
   data.todos = finalTodos
+  // 已读保留兜底：同群 + 归一化包含匹配，避免措辞漂移导致「识别后已读变未读」
+  migrateSeenBySimilarity(data, finalTodos)
   data.todosGeneratedAt = Date.now()
   saveData(DATA_PATH(), data)
   state.dataJson = data
