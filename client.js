@@ -59,7 +59,8 @@ window.__ModuleLoader__.load({
 .ft-badge-red { background:#fdecea; color:#c0392b; }
 .ft-badge-gray { background:#f0f0f0; color:#666; }
 .ft-badge-blue { background:#eef4fb; color:#0a66c2; }
-.ft-todo-unread { border-color:#0a66c2; background:#f6f9fd; }
+.ft-todo-unread { border-color:#0a66c2; background:#f6f9fd; cursor:pointer; }
+.ft-todo-unread:hover { background:#eef3fb; }
 .ft-todo-unread-badge { margin-right:6px; vertical-align:1px; }
 .ft-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; border:1px solid rgba(0,0,0,.15); background:#fff; color:#222; padding:6px 12px; border-radius:7px; cursor:pointer; font-size:12px; }
 .ft-btn:hover { background:#f6f8fa; }
@@ -629,7 +630,17 @@ window.__ModuleLoader__.load({
                       return el('div', null, list.map(function (t) {
                         const src = t.source || {}
                         const unread = !t.seen
-                        return el('div', { key: t.key || (src.chatId + '::' + t.todo), className: 'ft-todo' + (unread ? ' ft-todo-unread' : '') },
+                        return el('div', {
+                          key: t.key || (src.chatId + '::' + t.todo),
+                          className: 'ft-todo' + (unread ? ' ft-todo-unread' : ''),
+                          title: unread ? '点击标记为已读（未读数减一）' : undefined,
+                          onClick: function (e) {
+                            if (t.seen) return
+                            // 点复选框（标记完成）不触发「点击已读」
+                            if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('.ft-todo-check')) return
+                            markSeen(t)
+                          },
+                        },
                           el('div', { className: 'ft-todo-head' },
                             el('input', { type: 'checkbox', className: 'ft-todo-check', checked: false, title: '标记完成（计入归档，后续识别不再出现）', onChange: function () { completeTodo(t) } }),
                             el('div', { className: 'ft-todo-main' },
@@ -643,8 +654,7 @@ window.__ModuleLoader__.load({
                                 t.mergedFrom && t.mergedFrom.length ? ' · 已合并 ' + t.mergedFrom.length + ' 条' : ''
                               ),
                               src.chat ? el('div', { className: 'ft-todo-meta' }, '来源: ' + src.chat + (src.time ? ' · ' + src.time : '')) : null
-                            ),
-                            unread ? Btn({ small: true, label: '已读', title: '标记为已读（未读数减一）', onClick: function () { markSeen(t) } }) : null
+                            )
                           )
                         )
                       }))
