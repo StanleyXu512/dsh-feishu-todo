@@ -532,6 +532,8 @@ async function doSync() {
   next.todosGeneratedAt = data.todosGeneratedAt || 0
   next.followedChats = data.followedChats || []
   next.completedTodos = data.completedTodos || {}
+  next.todoSeen = data.todoSeen || {} // 关键：识别产生的已读标记不能丢
+  next.lastNotify = data.lastNotify || null
   next.version = 1
 
   saveData(DATA_PATH(), next)
