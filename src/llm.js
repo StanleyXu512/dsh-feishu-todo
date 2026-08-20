@@ -86,7 +86,7 @@ export async function chatCompletion(cfg, input, { json = false, onDelta } = {})
           await sleep(backoffMs(attempt))
           return doCall(withJson, attempt + 1, stream, jsonForThis, skipMaxTokens)
         }
-        throw new LLMError(describeFailure(abortReason, totalMs, idleTimeoutMs, isAbort, String((err && err.message) || err)))
+        throw new LLMError(describeFailure(abortReason, totalMs, idleTimeoutMs, isAbort, netDetail(err), { url, model: cfg.model }))
       }
 
       const text = stream ? null : await res.text().catch(() => '')
@@ -212,7 +212,7 @@ export async function chatCompletion(cfg, input, { json = false, onDelta } = {})
         await sleep(backoffMs(attempt))
         return doCall(withJson, attempt + 1, stream, jsonForThis, skipMaxTokens)
       }
-      throw new LLMError(describeFailure(abortReason, totalMs, idleTimeoutMs, isAbort, String((err && err.message) || err)))
+      throw new LLMError(describeFailure(abortReason, totalMs, idleTimeoutMs, isAbort, netDetail(err), { url, model: cfg.model }))
     } finally {
       clearTimeout(totalTimer)
     }
@@ -221,9 +221,24 @@ export async function chatCompletion(cfg, input, { json = false, onDelta } = {})
   return doCall(json)
 }
 
-function describeFailure(abortReason, totalMs, idleMs, isAbort, raw) {
+function describeFailure(abortReason, totalMs, idleMs, isAbort, raw, opts = {}) {
   if (abortReason === 'idle') return `模型响应停滞（${Math.round(idleMs / 1000)}s 无输出后中断）`
   if (abortReason === 'total') return `LLM 请求超时（>${Math.round(totalMs / 1000)}s）`
   if (isAbort) return `LLM 请求超时（>${Math.round(totalMs / 1000)}s）`
-  return `LLM 请求失败: ${raw}`
+  const where = opts.url ? `（服务 ${opts.url} · 模型 ${opts.model || '-'}）` : ''
+  return `LLM 请求失败: ${raw}${where}`
+}
+
+/** 网络层错误细节：undici 的 "fetch failed" 真实原因在 cause 链里 */
+function netDetail(err) {
+  const base = String((err && err.message) || '网络错误')
+  let e = err
+  let cause = ''
+  while (e) {
+    const c = e.cause
+    if (!c) break
+    cause = String((c && c.message) || c)
+    e = c instanceof Error ? c : null
+  }
+  return cause ? `${base}（${cause}）` : base
 }
