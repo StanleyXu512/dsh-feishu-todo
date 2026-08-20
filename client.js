@@ -1015,7 +1015,9 @@ window.__ModuleLoader__.load({
           publish()
         }
       })
-      scope.load()
+      // 兼容不同 DSH 版本的 settingsScope scope 契约：部分版本无 load()，
+      // 订阅后由宿主自动同步初值（useSyncExternalStore 标准行为）
+      if (typeof scope.load === 'function') scope.load()
 
       function edit(field, raw) {
         const next = Object.assign({}, staged)
