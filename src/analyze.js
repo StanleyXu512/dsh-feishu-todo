@@ -16,6 +16,7 @@ export const SYSTEM_PROMPT = `你是一名专业的待办事项提取助手。�
 3. 对每条待办输出：todo（做什么，简洁具体）；assignee（负责人，从消息上下文判断，无法判断则留空）；deadline（截止时间，依据消息中的时间表达推断为具体日期，如“周五前”给出本周五的日期，无法判断则留空）；priority（高/中/低）；source（line 为该待办最相关消息所在行号，chat 为群名，sender 为发送者，time 为该行消息时间）。
 4. 同一件事在多个消息中被重复提及时，只提取一条，优先合并最新信息。
 5. 严格只输出一个 JSON 对象，不要输出任何其他文字或代码块标记。
+6. 必须逐行完整扫描全部消息，宁可多提取也不要遗漏：凡是含明确动作诉求的消息（如「给我转」「帮我去」「记得」「提醒我」「需要跟进」「@某人交代任务」「给某人布置工作」）都必须是待办。尤其注意列表靠后（较新）的行，不要因为内容多而漏掉。
 输出格式：
 {"todos":[{"todo":"...","assignee":"...","deadline":"...","priority":"高","source":{"line":1,"chat":"群名","sender":"发送者","time":"MM-DD HH:mm"}}]}`
 
@@ -297,7 +298,8 @@ export async function extractTodos(config, { chat, messages, names = {} }, opts 
   })
 
   // 过滤掉纯占位（未知类型等无信息量行）不会影响行号映射，保留原顺序
-  const chunks = chunkLines(lines, 7000)
+  // 分片更细 → 每条消息被完整审视，显著降低大文本下的漏检（尤其片尾最新消息）
+  const chunks = chunkLines(lines, 4000)
   const chunkConcurrency = Math.max(1, Number(opts.chunkConcurrency) || 1)
   const offsets = []
   let off = 0

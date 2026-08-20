@@ -669,12 +669,23 @@ async function doTodos(refreshFirst) {
   // 群级并行调用 LLM（受限），每个群内分片也并行；整体并发受束，避免打爆模型限流
   const chatConcurrency = Number(cfg.sync.todoConcurrency) || 2
   const chunkConcurrency = Number(cfg.sync.todoChunkConcurrency) || 2
+  // 最新消息补充识别条数：全量分片识别对「片尾最新消息」易漏检（模型长上下文注意力衰减），
+  // 对每群最新 N 条单独再识别一次（小批识别可靠），合并进结果
+  const latestPromptCount = Math.min(20, Math.max(1, Number(cfg.sync.latestPromptCount) || 10))
   const results = new Array(chats.length)
   await mapLimit(chats, chatConcurrency, async (chat, i) => {
     const messages = (data.messages && data.messages[chat.chat_id]) || []
     const names = (data.memberNames && data.memberNames[chat.chat_id]) || {}
     const { todos } = await extractTodos(cfg, { chat, messages, names }, { chunkConcurrency })
-    results[i] = todos
+    const extra = []
+    if (messages.length > latestPromptCount) {
+      const tail = messages.slice(-latestPromptCount)
+      try {
+        const r2 = await extractTodos(cfg, { chat, messages: tail, names }, { chunkConcurrency: 1 })
+        extra.push(...(Array.isArray(r2.todos) ? r2.todos : []))
+      } catch { /* 补充识别失败不影响主结果 */ }
+    }
+    results[i] = todos.concat(extra)
   })
 
   const all = []
