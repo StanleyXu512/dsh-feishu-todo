@@ -21,7 +21,7 @@ import path from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { FeishuClient, buildAuthorizeUrl } from './src/feishu.js'
-import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary } from './src/analyze.js'
+import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary, askTodos } from './src/analyze.js'
 import { loadData, saveData, emptyData } from './src/store.js'
 import { DEFAULTS, mergeConfig, readConfigFile, buildScopeString, structuredCloneSafe } from './src/config.js'
 import { generateCodeVerifier, codeChallengeS256, randomHex, maskSecret, nowSec, mapLimit } from './src/util.js'
@@ -907,6 +907,24 @@ const handlers = {
     }
     writeJson(res, 200, { ok: true, state: buildState() })
   }),
+  todoAsk: guard(async (req, res) => {
+    // AI 待办问答：基于当前待办列表回答自然语言问题
+    const body = await readJsonBody(req)
+    const question = String((body && body.question) || '').trim()
+    if (!question) {
+      writeJson(res, 400, { ok: false, error: '缺少问题' })
+      return
+    }
+    const cfg = fullConfig()
+    const data = state.dataJson || emptyData()
+    const todos = Array.isArray(data.todos) ? data.todos : []
+    try {
+      const answer = await askTodos(cfg, todos, question)
+      writeJson(res, 200, { ok: true, answer: String(answer || '') })
+    } catch (e) {
+      writeJson(res, 500, { ok: false, error: (e && e.message) || String(e) })
+    }
+  }),
   chatsSearch: guard(async (req, res) => {
     const body = await readJsonBody(req)
     const query = String((body && body.query) || '').trim()
@@ -1003,6 +1021,7 @@ const ROUTES = [
   { kind: 'exact', path: '/api/feishu-todo/todo-seen', handler: handlers.todoSeen },
   { kind: 'exact', path: '/api/feishu-todo/todo-seen-all', handler: handlers.todoSeenAll },
   { kind: 'exact', path: '/api/feishu-todo/todo-restore', handler: handlers.todoRestore },
+  { kind: 'exact', path: '/api/feishu-todo/todo-ask', handler: handlers.todoAsk },
   { kind: 'exact', path: '/api/feishu-todo/chats/search', handler: handlers.chatsSearch },
   { kind: 'exact', path: '/api/feishu-todo/auth/start', handler: handlers.authStart },
   { kind: 'exact', path: '/api/feishu-todo/auth/status', handler: handlers.authStatus },

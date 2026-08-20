@@ -346,3 +346,37 @@ export async function extractTodos(config, { chat, messages, names = {} }, opts 
 
   return { todos: deduped, chunks: chunks.length, messagesCount: messages.length }
 }
+
+/**
+ * AI 待办问答：基于「现有待办列表」用自然语言回答用户的问题。
+ * 只依据给定的结构化待办数据作答（不读取消息原文），不编造不存在的待办。
+ * 返回纯文本回答；LLM 调用失败时抛出（LLMError），由调用方处理。
+ */
+export async function askTodos(config, todos, question, opts = {}) {
+  const list = Array.isArray(todos) ? todos.slice(0, 300) : []
+  if (!list.length) {
+    return '当前没有可用的待办数据。请先在面板「待办」页同步并识别，或检查数据文件。'
+  }
+
+  const lines = list.map((t, idx) => {
+    const src = t && t.source && typeof t.source === 'object' ? t.source : {}
+    const parts = []
+    parts.push(String(t && t.todo || '').replace(/\n/g, ' '))
+    if (t && t.assignee) parts.push('负责人:' + t.assignee)
+    if (t && t.deadline) parts.push('截止:' + t.deadline)
+    if (t && t.priority) parts.push('优先级:' + t.priority)
+    if (src.chat) parts.push('群:' + src.chat)
+    parts.push(t && t.seen === false ? '未读' : '已读')
+    return `${idx + 1}. ${parts.join(' | ')}`
+  }).join('\n')
+
+  const system = '你是一名飞书待办助手。用户会给出现有待办清单（编号列表，字段含 负责人/截止/优先级/群/已读状态），请你根据这份清单回答用户的问题。要求：\n' +
+    '1. 只依据清单中的信息作答，禁止编造清单中不存在的待办或字段。\n' +
+    '2. 需要引用具体待办时，直接引用其内容与字段；需要时用编号（如「第 3 条」）指代。\n' +
+    '3. 按数量/时间/负责人等维度汇总时，先数清楚再回答。\n' +
+    '4. 用简洁的中文回答，条理清晰，适当用列表。'
+  const user = `以下是当前待办清单：\n${lines}\n\n用户问题：${String(question || '').trim()}`
+
+  const result = await chatCompletion(config && config.llm ? config.llm : config, { system, user }, { json: false })
+  return String(result || '').trim() || '(模型未返回有效回答)'
+}

@@ -96,6 +96,13 @@ window.__ModuleLoader__.load({
 .ft-chat-name { word-break:break-all; }
 .ft-chat-count { color:#888; font-size:11px; }
 .ft-search { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid rgba(0,0,0,.15); border-radius:8px; font-size:13px; margin-bottom:8px; background:transparent; color:var(--dsw-alias-label-primary,#1f2328); }
+.ft-filter-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.ft-filter-row .ft-search { flex:1; min-width:0; margin-bottom:0; }
+.ft-select { padding:7px 8px; border:1px solid rgba(0,0,0,.15); border-radius:8px; font-size:13px; background:transparent; color:var(--dsw-alias-label-primary,#1f2328); max-width:160px; }
+.ft-ask { border:1px solid rgba(10,102,194,.35); background:#f0f6fd; border-radius:8px; padding:10px; margin-bottom:8px; }
+.ft-ask-q { display:flex; align-items:center; gap:8px; }
+.ft-ask-q .ft-search { margin-bottom:0; }
+.ft-ask-a { margin-top:8px; padding:10px; background:#fff; border:1px solid rgba(0,0,0,.1); border-radius:8px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:320px; overflow:auto; color:var(--dsw-alias-label-primary,#1f2328); }
 .ft-only-followed { display:flex; align-items:center; gap:6px; font-size:12px; color:#555; margin-bottom:8px; cursor:pointer; }
 .ft-hint { font-size:12px; color:#888; margin-top:2px; }
 /* 设置卡片（官方「插件 → 可配置」内渲染）——标题可折叠/展开 */
@@ -171,6 +178,7 @@ window.__ModuleLoader__.load({
       todoSeen: '/api/feishu-todo/todo-seen',
       todoSeenAll: '/api/feishu-todo/todo-seen-all',
       todoRestore: '/api/feishu-todo/todo-restore',
+      todoAsk: '/api/feishu-todo/todo-ask',
       notifyAck: '/api/feishu-todo/notify-ack',
       chatsSearch: '/api/feishu-todo/chats/search',
       authStart: '/api/feishu-todo/auth/start',
@@ -239,6 +247,11 @@ window.__ModuleLoader__.load({
       const [archiveRange, setArchiveRange] = React.useState('7d') // 归档时间筛选：today/7d/30d/all
       const [todoQuery, setTodoQuery] = React.useState('') // 待办列表文本搜索
       const [archiveQuery, setArchiveQuery] = React.useState('') // 已完成归档文本搜索
+      const [assigneeFilter, setAssigneeFilter] = React.useState('') // 待办负责人筛选
+      const [askOpen, setAskOpen] = React.useState(false) // AI 待办问答面板
+      const [askQ, setAskQ] = React.useState('')
+      const [askA, setAskA] = React.useState('')
+      const [askBusy, setAskBusy] = React.useState(false)
 
       async function refresh() {
         try {
@@ -404,6 +417,22 @@ window.__ModuleLoader__.load({
             setErr((e && e.message) || String(e))
             refresh()
           })
+      }
+
+      // AI 待办问答：把问题发给宿主，基于当前待办列表回答
+      function askAi() {
+        const q = askQ.trim()
+        if (!q || askBusy) return
+        setAskBusy(true)
+        setAskA('')
+        api(API.todoAsk, { method: 'POST', body: { question: q } })
+          .then(function (r) {
+            setAskA((r && r.answer) || '(模型未返回有效回答)')
+          })
+          .catch(function (e) {
+            setAskA('提问失败：' + ((e && e.message) || String(e)))
+          })
+          .finally(function () { setAskBusy(false) })
       }
 
       // 撤回：把已完成的待办撤回到待办列表（重新未读）
@@ -615,17 +644,49 @@ window.__ModuleLoader__.load({
                 ),
                 todos && todos.length
                   ? el('div', null,
-                    el('input', { className: 'ft-search', type: 'text', placeholder: '搜索待办（任务/群/负责人）…', value: todoQuery, onChange: function (e) { setTodoQuery(e.target.value) } }),
+                    el('div', { className: 'ft-filter-row' },
+                      el('input', { className: 'ft-search', type: 'text', placeholder: '搜索待办（任务/群/负责人）…', value: todoQuery, onChange: function (e) { setTodoQuery(e.target.value) } }),
+                      el('select', {
+                        className: 'ft-select',
+                        title: '按负责人筛选',
+                        value: assigneeFilter,
+                        onChange: function (e) { setAssigneeFilter(e.target.value) },
+                      },
+                        el('option', { value: '' }, '全部负责人'),
+                        (function () {
+                          const seen = {}
+                          todos.forEach(function (t) { if (t && t.assignee) seen[t.assignee] = true })
+                          return Object.keys(seen).sort().map(function (name) {
+                            return el('option', { key: name, value: name }, name)
+                          })
+                        })()
+                      ),
+                      Btn({ small: true, label: askOpen ? '收起 AI' : '🤖 询问 AI', title: '用自然语言向 AI 询问当前待办', onClick: function () { setAskOpen(!askOpen) } })
+                    ),
+                    askOpen ? el('div', { className: 'ft-ask' },
+                      el('div', { className: 'ft-ask-q' },
+                        el('input', {
+                          className: 'ft-search',
+                          type: 'text',
+                          placeholder: '如：这周有哪些待办？张三负责什么？哪些快到期了？',
+                          value: askQ,
+                          onChange: function (e) { setAskQ(e.target.value) },
+                          onKeyDown: function (e) { if (e.key === 'Enter') askAi() },
+                        }),
+                        Btn({ small: true, primary: true, label: askBusy ? '思考中…' : '提问', disabled: askBusy || !askQ.trim(), onClick: askAi })
+                      ),
+                      askA ? el('div', { className: 'ft-ask-a' }, askA) : null
+                    ) : null,
                     (function () {
                       const q = todoQuery.trim().toLowerCase()
-                      const list = q
-                        ? todos.filter(function (t) {
-                            const src = t.source || {}
-                            return String(t.todo || '').toLowerCase().indexOf(q) !== -1 ||
-                              String(src.chat || '').toLowerCase().indexOf(q) !== -1 ||
-                              String(t.assignee || '').toLowerCase().indexOf(q) !== -1
-                          })
-                        : todos
+                      const list = todos.filter(function (t) {
+                        if (assigneeFilter && String(t.assignee || '') !== assigneeFilter) return false
+                        if (!q) return true
+                        const src = t.source || {}
+                        return String(t.todo || '').toLowerCase().indexOf(q) !== -1 ||
+                          String(src.chat || '').toLowerCase().indexOf(q) !== -1 ||
+                          String(t.assignee || '').toLowerCase().indexOf(q) !== -1
+                      })
                       if (!list.length) return el('div', { className: 'ft-empty' }, '没有匹配「' + todoQuery.trim() + '」的待办。')
                       return el('div', null, list.map(function (t) {
                         const src = t.source || {}
