@@ -56,11 +56,15 @@ export function formatTime(sec) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** 毫秒时间戳 -> 'HH:mm' */
+/** 毫秒时间戳 -> 'MM-DD HH:mm'（跨年补年份 'YYYY-MM-DD HH:mm'） */
 export function formatClock(ms) {
   const d = new Date(Number(ms))
+  if (Number.isNaN(d.getTime())) return ''
   const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getHours())}:${p(d.getMinutes())}`
+  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  if (d.getFullYear() !== new Date().getFullYear()) return `${d.getFullYear()}-${md} ${hm}`
+  return `${md} ${hm}`
 }
 
 /** 相对时间描述：'3 分钟前' / '2 小时前' / '5 天前' */

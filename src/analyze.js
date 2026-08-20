@@ -339,6 +339,7 @@ export async function extractTodos(config, { chat, messages, names = {} }, opts 
         chatId: chat.chat_id || '',
         sender: ref ? senderDisplayName(ref, names) : '',
         time: ref ? formatClock(ref.create_time) : '',
+        ts: ref ? Number(ref.create_time) || 0 : 0,
         messageId: ref ? ref.message_id : '',
       },
     })
@@ -393,4 +394,58 @@ export async function askTodos(config, todos, question, opts = {}) {
 
   const result = await chatCompletion(config && config.llm ? config.llm : config, { messages }, { json: false })
   return String(result || '').trim() || '(模型未返回有效回答)'
+}
+
+/**
+ * 待办执行助手：解析用户意图，输出结构化行动计划（answer / complete / update）。
+ * 供宿主执行：勾选完成、修改描述等。失败时抛 LLMError，由调用方降级为纯问答。
+ */
+export async function planTodosAction(config, todos, question, opts = {}) {
+  const list = Array.isArray(todos) ? todos.slice(0, 300) : []
+  const lines = list.map((t, idx) => {
+    const src = t && t.source && typeof t.source === 'object' ? t.source : {}
+    const parts = []
+    parts.push(String(t && t.todo || '').replace(/\n/g, ' '))
+    if (t && t.assignee) parts.push('负责人:' + t.assignee)
+    if (t && t.deadline) parts.push('截止:' + t.deadline)
+    if (t && t.priority) parts.push('优先级:' + t.priority)
+    if (src.chat) parts.push('群:' + src.chat)
+    parts.push(t && t.seen === false ? '未读' : '已读')
+    return `${idx + 1}. ${parts.join(' | ')}`
+  }).join('\n')
+
+  const system = '你是一个待办执行助手。用户会给出待办清单（编号列表）并通过自然语言提出请求/问题。' +
+    '请把用户的意图解析为一种动作（action），严格只输出一个 JSON 对象，不要输出任何其他文字：\n' +
+    '可用动作：\n' +
+    '1. action="answer"：用户只是询问/汇总/闲聊，没有要操作待办。回答内容填写在 answerText。\n' +
+    '2. action="complete"：用户要把某条/某几条待办标记为已完成（如「把这个勾掉」「完成了」「搞定它」）。todoRefs 填对应待办的编号（如 "3" / "第3条"）或原文标题。\n' +
+    '3. action="update"：用户要修改某条待办的描述或字段（如「把X改成Y」「这条改到周五」「负责人换成小王」）。todoRefs 填一条待办的编号或原文；changes 填新值（不修改的字段省略或留空字符串）。\n' +
+    '输出格式：{"action":"answer|complete|update","todoRefs":["第N条"或原文], "changes":[{"todo":"新描述","assignee":"","deadline":"","priority":""}], "answerText":"answer 时的回答；其他动作可留空", "note":"一句话说明本次意图"}\n' +
+    '要求：\n' +
+    '- 只有明确对「清单中的待办」执行操作时才用 complete/update；不明确是第几条时，用原文填 todoRefs；无法对应任何待办时回到 answer 并向用户说明。\n' +
+    '- todoRefs 最多 5 条；update 只允许 1 条。\n' +
+    '- 中文回答，简洁。'
+
+  const messages = [{ role: 'system', content: system }]
+  const history = Array.isArray(opts.history) ? opts.history : []
+  const recent = history.slice(-12)
+  for (const h of recent) {
+    if (h && typeof h.content === 'string' && (h.role === 'user' || h.role === 'assistant')) {
+      messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content })
+    }
+  }
+  messages.push({
+    role: 'user',
+    content: `${list.length ? `以下是当前待办清单：\n${lines}\n\n` : '(当前没有待办清单)'}用户请求：${String(question || '').trim()}`,
+  })
+
+  const raw = await chatCompletion(config && config.llm ? config.llm : config, { messages }, { json: true })
+  let plan = null
+  try {
+    plan = extractJsonObject(String(raw || ''))
+  } catch (e) { plan = null }
+  if (!plan || typeof plan !== 'object') {
+    throw new Error('AI 未返回有效的行动计划')
+  }
+  return plan
 }

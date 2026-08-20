@@ -21,10 +21,10 @@ import path from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { FeishuClient, buildAuthorizeUrl } from './src/feishu.js'
-import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary, askTodos } from './src/analyze.js'
+import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary, askTodos, planTodosAction } from './src/analyze.js'
 import { loadData, saveData, emptyData } from './src/store.js'
 import { DEFAULTS, mergeConfig, readConfigFile, buildScopeString, structuredCloneSafe } from './src/config.js'
-import { generateCodeVerifier, codeChallengeS256, randomHex, maskSecret, nowSec, mapLimit } from './src/util.js'
+import { generateCodeVerifier, codeChallengeS256, randomHex, maskSecret, nowSec, mapLimit, formatClock } from './src/util.js'
 
 /** Stable cordis plugin name. */
 export const name = 'feishu-todo'
@@ -578,6 +578,47 @@ async function markTodoDone(key, details) {
   return data.todos
 }
 
+/** AI 助手：按编号（第 N 条 / N）或原文匹配待办 */
+function findTodoByRef(todos, ref) {
+  const text = String(ref || '').trim()
+  if (!text) return null
+  const m = text.match(/第?\s*(\d{1,3})\s*条?/)
+  if (m) {
+    const i = Number(m[1]) - 1
+    if (i >= 0 && i < todos.length) return { todo: todos[i], via: '编号' }
+  }
+  const norm = normTodoText(text)
+  if (!norm) return null
+  const hits = todos.filter((t) => {
+    const tn = normTodoText(t && t.todo)
+    return tn === norm || tn.includes(norm) || norm.includes(tn)
+  })
+  if (hits.length === 1) return { todo: hits[0], via: '文本' }
+  if (hits.length > 1) return { multiple: hits.map((t) => String(t.todo || '')) }
+  return null
+}
+
+/** AI 助手：应用 update 变更（todo 文本 / assignee / deadline / priority），迁移已读 key */
+function applyTodoUpdate(data, todo, changes) {
+  const src = todo && todo.source && typeof todo.source === 'object' ? todo.source : {}
+  const oldKey = todoKey(todo)
+  const next = Object.assign({}, todo || {})
+  if (typeof changes.todo === 'string' && changes.todo.trim()) next.todo = changes.todo.trim()
+  if (typeof changes.assignee === 'string') next.assignee = changes.assignee.trim()
+  if (typeof changes.deadline === 'string') next.deadline = changes.deadline.trim()
+  if (typeof changes.priority === 'string') next.priority = changes.priority.trim()
+  const newKey = todoKey(next)
+  const idx = (data.todos || []).findIndex((t) => todoKey(t) === oldKey)
+  if (idx < 0) return null
+  // 描述变化会导致 key 变化：迁移已读标记，避免已读状态丢失
+  if (oldKey !== newKey && data.todoSeen && data.todoSeen[oldKey]) {
+    if (!data.todoSeen[newKey]) data.todoSeen[newKey] = true
+    delete data.todoSeen[oldKey]
+  }
+  data.todos[idx] = next
+  return next
+}
+
 async function doTodos(refreshFirst) {
   if (refreshFirst) await doSync()
   const cfg = fullConfig()
@@ -754,7 +795,17 @@ function buildState() {
   }).sort((a, b) => b.doneAt - a.doneAt)
   // 未读待办：todos 里 key 尚未标记「已读」的条目（消息栏逐条点掉后写 todoSeen）
   const todoSeenMap = data.todoSeen && typeof data.todoSeen === 'object' ? data.todoSeen : {}
-  const todosOut = (data.todos || []).map((t) => ({ ...t, key: todoKey(t), seen: Boolean(todoSeenMap[todoKey(t)]) }))
+  const todosOut = (data.todos || []).map((t) => {
+    // 时间降级：有原始时间戳则按统一格式重算（旧数据只有 HH:mm 的 time 字符串也保持）
+    const src = (t && t.source && typeof t.source === 'object') ? t.source : {}
+    let out = t
+    if (src.ts && !src.time) {
+      out = { ...t, source: { ...src, time: formatClock(src.ts) } }
+    } else if (src.ts && typeof src.time === 'string' && /^\d{1,2}:\d{2}$/.test(src.time)) {
+      out = { ...t, source: { ...src, time: formatClock(src.ts) } }
+    }
+    return { ...out, key: todoKey(t), seen: Boolean(todoSeenMap[todoKey(t)]) }
+  })
   const unreadTodos = todosOut.filter((t) => !t.seen)
   const unreadChats = [...new Set(unreadTodos.map((t) => (t.source && t.source.chat) || '').filter(Boolean))].slice(0, 5)
   return {
@@ -908,7 +959,7 @@ const handlers = {
     writeJson(res, 200, { ok: true, state: buildState() })
   }),
   todoAsk: guard(async (req, res) => {
-    // AI 待办问答（多轮）：基于当前待办列表回答自然语言问题
+    // AI 待办助手（多轮 + 可执行）：解析意图 → answer / complete（勾选完成）/ update（修改描述与字段）
     const body = await readJsonBody(req)
     const question = String((body && body.question) || '').trim()
     if (!question) {
@@ -919,12 +970,70 @@ const handlers = {
     const cfg = fullConfig()
     const data = state.dataJson || emptyData()
     const todos = Array.isArray(data.todos) ? data.todos : []
+    const applied = { completed: [], updated: [] }
+
+    let answer = ''
     try {
-      const answer = await askTodos(cfg, todos, question, { history })
-      writeJson(res, 200, { ok: true, answer: String(answer || '') })
+      if (todos.length === 0) {
+        answer = '当前没有可用的待办数据。请先在面板「待办」页同步并识别，或检查数据文件。'
+      } else {
+        let plan = null
+        try { plan = await planTodosAction(cfg, todos, question, { history }) } catch (e) { plan = null }
+        if (!plan || !plan.action) {
+          // 降级：纯问答
+          answer = await askTodos(cfg, todos, question, { history })
+        } else {
+          const action = plan.action === 'complete' ? 'complete' : plan.action === 'update' ? 'update' : 'answer'
+          if (action === 'answer') {
+            answer = String(plan.answerText || '').trim()
+            if (!answer) answer = await askTodos(cfg, todos, question, { history })
+          } else {
+            const refs = Array.isArray(plan.todoRefs) ? plan.todoRefs.slice(0, 5) : []
+            const changes = (Array.isArray(plan.changes) && plan.changes[0] && typeof plan.changes[0] === 'object') ? plan.changes[0] : {}
+            if (!refs.length) {
+              answer = '你想操作哪条待办呢？请说一下是「第几条」或待办原文（例如：把第 3 条改为已办）。'
+            } else {
+              if (action === 'complete') {
+                for (const ref of refs) {
+                  const hit = findTodoByRef(todos, ref)
+                  if (!hit || hit.multiple) { answer += (answer ? '\n' : '') + `未找到待办「${ref}」` + (hit && hit.multiple ? '（匹配到多条，请更具体）' : '。'); continue }
+                  const t = hit.todo
+                  await markTodoDone(todoKey(t), { todo: t.todo, assignee: t.assignee || '', priority: t.priority || '', deadline: t.deadline || '', source: (t.source && typeof t.source === 'object') ? t.source : {} })
+                  applied.completed.push(String(t.todo || ''))
+                }
+                if (applied.completed.length) answer = `已为你完成 ${applied.completed.length} 条待办：\n` + applied.completed.map((x) => '✅ ' + x).join('\n')
+                else answer = '没有待办被标记为完成（请确认待办编号或原文）。'
+              } else if (action === 'update') {
+                const ref = refs[0]
+                const hit = findTodoByRef(todos, ref)
+                if (!hit || hit.multiple) {
+                  answer = `未找到待办「${ref}」` + (hit && hit.multiple ? '（匹配到多条，请更具体）' : '。')
+                } else {
+                  const updated = applyTodoUpdate(data, hit.todo, changes)
+                  if (updated) {
+                    saveData(DATA_PATH(), data)
+                    state.dataJson = data
+                    answer = `已更新待办：\n「${hit.todo.todo}」${updated.todo !== hit.todo.todo ? '→ 「' + updated.todo + '」' : ''}` +
+                      (updated.assignee !== (hit.todo.assignee || '') ? `\n负责人: ${updated.assignee || '(清除)'}` : '') +
+                      (updated.deadline !== (hit.todo.deadline || '') ? `\n截止: ${updated.deadline || '(清除)'}` : '') +
+                      (updated.priority !== (hit.todo.priority || '') ? `\n优先级: ${updated.priority || '(清除)'}` : '')
+                    applied.updated.push({ before: String(hit.todo.todo || ''), after: String(updated.todo || '') })
+                  } else {
+                    answer = '更新失败：没有找到该待办。'
+                  }
+                }
+              }
+              if (plan.note) answer += '\n（' + String(plan.note) + '）'
+            }
+          }
+        }
+      }
     } catch (e) {
       writeJson(res, 500, { ok: false, error: (e && e.message) || String(e) })
+      return
     }
+
+    writeJson(res, 200, { ok: true, answer: String(answer || ''), applied, state: buildState() })
   }),
   chatsSearch: guard(async (req, res) => {
     const body = await readJsonBody(req)
