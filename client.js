@@ -448,6 +448,13 @@ window.__ModuleLoader__.load({
         api(API.todoAsk, { method: 'POST', body: { question: q, history: history } })
           .then(function (r) {
             setChat(function (prev) { return prev.map(function (m, i) { return i === prev.length - 1 ? { role: 'assistant', content: (r && r.answer) || '(模型未返回有效回答)' } : m }) })
+            // AI 执行了操作（完成/修改待办）→ 刷新列表与未读数
+            const ap = r && r.applied
+            if (ap && ((ap.completed && ap.completed.length) || (ap.updated && ap.updated.length))) {
+              if (r.state) setState(r.state)
+              if (r.state && Array.isArray(r.state.data && r.state.data.todos)) setTodos(r.state.data.todos)
+              if (props.onUnreadChange && r.state && r.state.data) props.onUnreadChange(Number(r.state.data.unreadCount) || 0)
+            }
           })
           .catch(function (e) {
             setChat(function (prev) { return prev.map(function (m, i) { return i === prev.length - 1 ? { role: 'assistant', content: '提问失败：' + ((e && e.message) || String(e)), error: true } : m }) })
@@ -711,7 +718,7 @@ window.__ModuleLoader__.load({
                                   : m.content
                               )
                             })
-                          : el('div', { className: 'ft-ask-empty' }, '基于当前待办清单提问，支持连续追问。示例：「这周有哪些待办？」「张三负责什么？」「哪些快到期了？」')
+                          : el('div', { className: 'ft-ask-empty' }, '基于当前待办清单提问，支持连续追问与操作。示例：\n「这周有哪些待办？」「张三负责什么？」\n「把第 3 条标记为已完成」\n「把第 5 条的描述改成：周五前发版评审」')
                       ),
                       el('div', { className: 'ft-ask-q' },
                         el('input', {
