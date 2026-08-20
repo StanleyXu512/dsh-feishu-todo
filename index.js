@@ -627,29 +627,54 @@ function applyTodoUpdate(data, todo, changes) {
  * 对每个新待办：若旧 todoSeen 中有「同群 + 归一化文本互相包含」的已读记录，补标已读，
  * 避免「同步识别后已读变未读」。精确命中（含合并迁移后的）直接跳过。
  */
+/** 字符 bigram 重合度（交集 / 较小集合），用于措辞漂移下的已读相似匹配 */
+function charBigramOverlap(a, b) {
+  const grams = (s) => { const g = new Set(); for (let i = 0; i + 2 <= s.length; i++) g.add(s.slice(i, i + 2)); return g }
+  const ga = grams(a)
+  const gb = grams(b)
+  if (!ga.size || !gb.size) return 0
+  let inter = 0
+  for (const x of ga) if (gb.has(x)) inter++
+  return inter / Math.min(ga.size, gb.size)
+}
+
+/**
+ * 已读匹配：key 精确命中 → true；否则同群且（归一化互相包含 或 bigram 重合 >= 0.85）。
+ * 识别措辞每次提取可能微变（高度相似但非包含关系），bigram 兜底保住已读状态。
+ */
+function seenKeyMatched(seen, todo) {
+  if (!seen || typeof seen !== 'object') return false
+  const k = todoKey(todo)
+  if (seen[k]) return true
+  const sp = k.indexOf('::')
+  if (sp < 0) return false
+  const chatId = k.slice(0, sp)
+  const norm = k.slice(sp + 2)
+  if (!norm) return false
+  return Object.keys(seen).some((sk) => {
+    const s = sk.indexOf('::')
+    if (s < 0 || sk.slice(0, s) !== chatId) return false
+    const sn = sk.slice(s + 2)
+    if (!sn) return false
+    if (sn.includes(norm) || norm.includes(sn)) return true
+    return charBigramOverlap(sn, norm) >= 0.85
+  })
+}
+
+/**
+ * 识别后已读保留（兜底）：LLM 每次提取的描述措辞可能漂移 → key 变化 → 旧已读标记匹配不上。
+ * 对每个新待办：若旧 todoSeen 中有「同群 + 相似文本」的已读记录，补标已读，
+ * 避免「同步识别后已读变未读」。精确命中（含合并迁移后的）直接跳过。
+ */
 function migrateSeenBySimilarity(data, newTodos) {
   const seen = data.todoSeen && typeof data.todoSeen === 'object' ? data.todoSeen : {}
   if (!seen || typeof seen !== 'object') return
-  const seenKeys = Object.keys(seen)
-  if (!seenKeys.length || !Array.isArray(newTodos) || !newTodos.length) return
+  if (!Object.keys(seen).length || !Array.isArray(newTodos) || !newTodos.length) return
   let changed = false
   for (const t of newTodos) {
     const k = todoKey(t)
     if (seen[k]) continue // 已精确命中（或其合并来源迁移过）
-    const sp = k.indexOf('::')
-    if (sp < 0) continue
-    const chatId = k.slice(0, sp)
-    const norm = k.slice(sp + 2)
-    if (!norm) continue
-    const hit = seenKeys.some((sk) => {
-      const s = sk.indexOf('::')
-      if (s < 0) return false
-      if (sk.slice(0, s) !== chatId) return false
-      const sn = sk.slice(s + 2)
-      if (!sn) return false
-      return sn.includes(norm) || norm.includes(sn)
-    })
-    if (hit) { seen[k] = true; changed = true }
+    if (seenKeyMatched(seen, t)) { seen[k] = true; changed = true }
   }
   if (changed) saveData(DATA_PATH(), data)
 }
@@ -736,7 +761,7 @@ async function doTodos(refreshFirst) {
       const sources = from
         .map((n) => { const i = Number(n) - 1; return preMerge[i] || null })
         .filter(Boolean)
-      if (sources.some((s) => data.todoSeen[todoKey(s)])) data.todoSeen[todoKey(t)] = true
+      if (sources.some((s) => seenKeyMatched(data.todoSeen, s))) data.todoSeen[todoKey(t)] = true
     }
     saveData(DATA_PATH(), data)
     state.dataJson = data
