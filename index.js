@@ -908,18 +908,19 @@ const handlers = {
     writeJson(res, 200, { ok: true, state: buildState() })
   }),
   todoAsk: guard(async (req, res) => {
-    // AI 待办问答：基于当前待办列表回答自然语言问题
+    // AI 待办问答（多轮）：基于当前待办列表回答自然语言问题
     const body = await readJsonBody(req)
     const question = String((body && body.question) || '').trim()
     if (!question) {
       writeJson(res, 400, { ok: false, error: '缺少问题' })
       return
     }
+    const history = Array.isArray(body && body.history) ? body.history : []
     const cfg = fullConfig()
     const data = state.dataJson || emptyData()
     const todos = Array.isArray(data.todos) ? data.todos : []
     try {
-      const answer = await askTodos(cfg, todos, question)
+      const answer = await askTodos(cfg, todos, question, { history })
       writeJson(res, 200, { ok: true, answer: String(answer || '') })
     } catch (e) {
       writeJson(res, 500, { ok: false, error: (e && e.message) || String(e) })

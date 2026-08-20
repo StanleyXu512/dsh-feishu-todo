@@ -99,10 +99,25 @@ window.__ModuleLoader__.load({
 .ft-filter-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
 .ft-filter-row .ft-search { flex:1; min-width:0; margin-bottom:0; }
 .ft-select { padding:7px 8px; border:1px solid rgba(0,0,0,.15); border-radius:8px; font-size:13px; background:transparent; color:var(--dsw-alias-label-primary,#1f2328); max-width:160px; }
-.ft-ask { border:1px solid rgba(10,102,194,.35); background:#f0f6fd; border-radius:8px; padding:10px; margin-bottom:8px; }
+.ft-ask { border:1px solid rgba(10,102,194,.35); background:#f0f6fd; border-radius:10px; padding:10px; margin-bottom:8px; }
+.ft-ask-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.ft-ask-title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary,#1f2328); }
+.ft-ask-body { max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-bottom:8px; padding-right:2px; }
+.ft-ask-body::-webkit-scrollbar { width:6px; }
+.ft-ask-body::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; }
+.ft-ask-empty { color:var(--dsw-alias-label-tertiary,#6b7280); font-size:12px; padding:10px 2px; line-height:1.6; }
+.ft-msg { max-width:92%; padding:8px 10px; border-radius:10px; font-size:13px; line-height:1.6; word-break:break-word; white-space:pre-wrap; }
+.ft-msg-user { align-self:flex-end; background:#0a66c2; color:#fff; border-bottom-right-radius:3px; }
+.ft-msg-ai { align-self:flex-start; background:#fff; color:var(--dsw-alias-label-primary,#1f2328); border:1px solid rgba(0,0,0,.1); border-bottom-left-radius:3px; }
+.ft-msg-err { border-color:rgba(220,38,38,.45); color:#b91c1c; background:#fef2f2; }
+.ft-msg-pending { display:inline-flex; align-items:center; gap:3px; padding:2px 0; }
+.ft-dot { width:5px; height:5px; border-radius:50%; background:currentColor; opacity:.45; animation:ft-blink 1s infinite; }
+.ft-dot:nth-child(2) { animation-delay:.18s; }
+.ft-dot:nth-child(3) { animation-delay:.36s; }
 .ft-ask-q { display:flex; align-items:center; gap:8px; }
-.ft-ask-q .ft-search { margin-bottom:0; }
-.ft-ask-a { margin-top:8px; padding:10px; background:#fff; border:1px solid rgba(0,0,0,.1); border-radius:8px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:320px; overflow:auto; color:var(--dsw-alias-label-primary,#1f2328); }
+.ft-ask-q .ft-search { flex:1; min-width:0; margin-bottom:0; }
+.ft-ask-q .ft-btn { flex-shrink:0; white-space:nowrap; }
+@keyframes ft-blink { 0%,100% { opacity:.45 } 50% { opacity:1 } }
 .ft-only-followed { display:flex; align-items:center; gap:6px; font-size:12px; color:#555; margin-bottom:8px; cursor:pointer; }
 .ft-hint { font-size:12px; color:#888; margin-top:2px; }
 /* 设置卡片（官方「插件 → 可配置」内渲染）——标题可折叠/展开 */
@@ -250,8 +265,9 @@ window.__ModuleLoader__.load({
       const [assigneeFilter, setAssigneeFilter] = React.useState('') // 待办负责人筛选
       const [askOpen, setAskOpen] = React.useState(false) // AI 待办问答面板
       const [askQ, setAskQ] = React.useState('')
-      const [askA, setAskA] = React.useState('')
       const [askBusy, setAskBusy] = React.useState(false)
+      const [chat, setChat] = React.useState([]) // 多轮对话消息 [{role:'user'|'assistant', content, error?, pending?}]
+      const askBodyRef = React.useRef(null) // 对话区滚动容器
 
       async function refresh() {
         try {
@@ -423,17 +439,32 @@ window.__ModuleLoader__.load({
       function askAi() {
         const q = askQ.trim()
         if (!q || askBusy) return
+        // 历史（取最近 12 条，与宿主上限一致）
+        const history = chat.slice(-12).map(function (m) { return { role: m.role === 'user' ? 'user' : 'assistant', content: String(m.content || '') } })
+        // 追加用户消息 + 思考中占位
+        setChat(chat.concat([{ role: 'user', content: q }, { role: 'assistant', content: '', pending: true }]))
+        setAskQ('')
         setAskBusy(true)
-        setAskA('')
-        api(API.todoAsk, { method: 'POST', body: { question: q } })
+        api(API.todoAsk, { method: 'POST', body: { question: q, history: history } })
           .then(function (r) {
-            setAskA((r && r.answer) || '(模型未返回有效回答)')
+            setChat(function (prev) { return prev.map(function (m, i) { return i === prev.length - 1 ? { role: 'assistant', content: (r && r.answer) || '(模型未返回有效回答)' } : m }) })
           })
           .catch(function (e) {
-            setAskA('提问失败：' + ((e && e.message) || String(e)))
+            setChat(function (prev) { return prev.map(function (m, i) { return i === prev.length - 1 ? { role: 'assistant', content: '提问失败：' + ((e && e.message) || String(e)), error: true } : m }) })
           })
           .finally(function () { setAskBusy(false) })
       }
+
+      function clearChat() {
+        setChat([])
+        setAskQ('')
+      }
+
+      // 新消息/展开面板时滚动到底部
+      React.useEffect(function () {
+        const box = askBodyRef.current
+        if (box) box.scrollTop = box.scrollHeight
+      }, [chat, askOpen])
 
       // 撤回：把已完成的待办撤回到待办列表（重新未读）
       function restoreTodo(a) {
@@ -664,18 +695,35 @@ window.__ModuleLoader__.load({
                       Btn({ small: true, label: askOpen ? '收起 AI' : '🤖 询问 AI', title: '用自然语言向 AI 询问当前待办', onClick: function () { setAskOpen(!askOpen) } })
                     ),
                     askOpen ? el('div', { className: 'ft-ask' },
+                      el('div', { className: 'ft-ask-head' },
+                        el('span', { className: 'ft-ask-title' }, '🤖 待办助手（多轮对话）'),
+                        chat.length ? Btn({ small: true, label: '清空', title: '清空对话记录', onClick: clearChat }) : null
+                      ),
+                      el('div', { className: 'ft-ask-body', ref: askBodyRef },
+                        chat.length
+                          ? chat.map(function (m, i) {
+                              return el('div', {
+                                key: i,
+                                className: 'ft-msg' + (m.role === 'user' ? ' ft-msg-user' : ' ft-msg-ai') + (m.error ? ' ft-msg-err' : ''),
+                              },
+                                m.pending
+                                  ? el('span', { className: 'ft-msg-pending' }, el('span', { className: 'ft-dot' }), el('span', { className: 'ft-dot' }), el('span', { className: 'ft-dot' }))
+                                  : m.content
+                              )
+                            })
+                          : el('div', { className: 'ft-ask-empty' }, '基于当前待办清单提问，支持连续追问。示例：「这周有哪些待办？」「张三负责什么？」「哪些快到期了？」')
+                      ),
                       el('div', { className: 'ft-ask-q' },
                         el('input', {
                           className: 'ft-search',
                           type: 'text',
-                          placeholder: '如：这周有哪些待办？张三负责什么？哪些快到期了？',
+                          placeholder: '输入问题，Enter 发送…',
                           value: askQ,
                           onChange: function (e) { setAskQ(e.target.value) },
                           onKeyDown: function (e) { if (e.key === 'Enter') askAi() },
                         }),
-                        Btn({ small: true, primary: true, label: askBusy ? '思考中…' : '提问', disabled: askBusy || !askQ.trim(), onClick: askAi })
+                        Btn({ small: true, primary: true, label: askBusy ? '思考中…' : '发送', disabled: askBusy || !askQ.trim(), onClick: askAi })
                       ),
-                      askA ? el('div', { className: 'ft-ask-a' }, askA) : null
                     ) : null,
                     (function () {
                       const q = todoQuery.trim().toLowerCase()

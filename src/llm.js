@@ -44,9 +44,14 @@ export async function chatCompletion(cfg, input, { json = false, onDelta } = {})
   const base = String(cfg.baseUrl || '').replace(/\/+$/, '')
   const url = `${base}/chat/completions`
 
+  // 支持传入完整消息序列（多轮对话）；否则按 system/user 组装
   const messages = []
-  if (input.system) messages.push({ role: 'system', content: input.system })
-  messages.push({ role: 'user', content: input.user })
+  if (Array.isArray(input.messages)) {
+    messages.push(...input.messages)
+  } else {
+    if (input.system) messages.push({ role: 'system', content: input.system })
+    messages.push({ role: 'user', content: input.user })
+  }
 
   const timeoutMs = Number(cfg.timeoutMs) || 120000
   const maxTimeoutMs = Math.max(timeoutMs, Number(cfg.maxTimeoutMs) || 480000)

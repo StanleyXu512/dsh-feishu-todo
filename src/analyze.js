@@ -374,9 +374,23 @@ export async function askTodos(config, todos, question, opts = {}) {
     '1. 只依据清单中的信息作答，禁止编造清单中不存在的待办或字段。\n' +
     '2. 需要引用具体待办时，直接引用其内容与字段；需要时用编号（如「第 3 条」）指代。\n' +
     '3. 按数量/时间/负责人等维度汇总时，先数清楚再回答。\n' +
-    '4. 用简洁的中文回答，条理清晰，适当用列表。'
-  const user = `以下是当前待办清单：\n${lines}\n\n用户问题：${String(question || '').trim()}`
+    '4. 用简洁的中文回答，条理清晰，适当用列表。\n' +
+    '5. 这是多轮对话：之后还有用户追问，请基于给出的清单与对话历史连贯作答，不要重复解释同一件事。'
 
-  const result = await chatCompletion(config && config.llm ? config.llm : config, { system, user }, { json: false })
+  // 多轮：system（含清单） + 最近历史消息 + 本轮问题
+  const messages = [{ role: 'system', content: system }]
+  const history = Array.isArray(opts.history) ? opts.history : []
+  const recent = history.slice(-12)
+  for (const h of recent) {
+    if (h && typeof h.content === 'string' && (h.role === 'user' || h.role === 'assistant')) {
+      messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content })
+    }
+  }
+  messages.push({
+    role: 'user',
+    content: `以下是当前待办清单（每次提问都以此为准）：\n${lines}\n\n问题：${String(question || '').trim()}`,
+  })
+
+  const result = await chatCompletion(config && config.llm ? config.llm : config, { messages }, { json: false })
   return String(result || '').trim() || '(模型未返回有效回答)'
 }
