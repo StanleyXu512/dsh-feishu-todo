@@ -21,7 +21,8 @@ import path from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { FeishuClient, buildAuthorizeUrl } from './src/feishu.js'
-import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary, askTodos, planTodosAction } from './src/analyze.js'
+import { extractTodos, normTodoText, dedupTodosVsArchive, mergeTodosSummary, askTodos, planTodosAction, senderDisplayName } from './src/analyze.js'
+import { extractMessageText } from './src/content.js'
 import { loadData, saveData, emptyData } from './src/store.js'
 import { DEFAULTS, mergeConfig, readConfigFile, buildScopeString, structuredCloneSafe } from './src/config.js'
 import { generateCodeVerifier, codeChallengeS256, randomHex, maskSecret, nowSec, mapLimit, formatClock } from './src/util.js'
@@ -1082,6 +1083,47 @@ const handlers = {
 
     writeJson(res, 200, { ok: true, answer: String(answer || ''), applied, state: buildState() })
   }),
+  todoContext: guard(async (req, res) => {
+    // 待办关联聊天上下文：定位触发该待办的消息，返回其前后各 N 条
+    const body = await readJsonBody(req)
+    const key = String((body && body.key) || '')
+    const data = state.dataJson || emptyData()
+    const todo = (data.todos || []).find((t) => todoKey(t) === key)
+    if (!todo) {
+      writeJson(res, 404, { ok: false, error: '未找到该待办' })
+      return
+    }
+    const src = (todo.source && typeof todo.source === 'object') ? todo.source : {}
+    const chatId = String(src.chatId || '')
+    const msgs = (data.messages && data.messages[chatId]) || []
+    const names = (data.memberNames && data.memberNames[chatId]) || {}
+    if (!msgs.length) {
+      writeJson(res, 200, { ok: true, chat: src.chat || '', context: [] })
+      return
+    }
+    let idx = -1
+    if (src.messageId) idx = msgs.findIndex((m) => m && m.message_id === src.messageId)
+    if (idx < 0) {
+      const ts = Number(src.ts) || 0
+      if (ts) idx = msgs.findIndex((m) => Number(m && m.create_time) >= ts)
+      if (idx < 0) idx = msgs.length - 1
+    }
+    const pad = 4
+    const from = Math.max(0, idx - pad)
+    const to = Math.min(msgs.length, idx + pad + 1)
+    const context = []
+    for (let i = from; i < to; i++) {
+      const m = msgs[i]
+      context.push({
+        time: formatClock(Number(m && m.create_time)),
+        sender: senderDisplayName(m, names),
+        text: extractMessageText(m),
+        msgType: (m && m.msg_type) || '',
+        isHit: i === idx,
+      })
+    }
+    writeJson(res, 200, { ok: true, chat: src.chat || '', key, context })
+  }),
   chatsSearch: guard(async (req, res) => {
     const body = await readJsonBody(req)
     const query = String((body && body.query) || '').trim()
@@ -1179,6 +1221,7 @@ const ROUTES = [
   { kind: 'exact', path: '/api/feishu-todo/todo-seen-all', handler: handlers.todoSeenAll },
   { kind: 'exact', path: '/api/feishu-todo/todo-restore', handler: handlers.todoRestore },
   { kind: 'exact', path: '/api/feishu-todo/todo-ask', handler: handlers.todoAsk },
+  { kind: 'exact', path: '/api/feishu-todo/todo-context', handler: handlers.todoContext },
   { kind: 'exact', path: '/api/feishu-todo/chats/search', handler: handlers.chatsSearch },
   { kind: 'exact', path: '/api/feishu-todo/auth/start', handler: handlers.authStart },
   { kind: 'exact', path: '/api/feishu-todo/auth/status', handler: handlers.authStatus },

@@ -87,6 +87,19 @@ window.__ModuleLoader__.load({
 .ft-todo-done { text-decoration:line-through; color:#999; }
 .ft-todo-meta { font-size:11px; color:#777; margin-top:3px; word-break:break-word; }
 .ft-todo-link { color:#0a66c2; text-decoration:none; }
+.ft-todo-toggle { flex-shrink:0; align-self:center; border:1px solid rgba(0,0,0,.12); background:#fff; color:#666; width:22px; height:22px; line-height:1; border-radius:5px; cursor:pointer; font-size:11px; padding:0; }
+.ft-todo-toggle:hover { background:#f0f6fd; border-color:#0a66c2; color:#0a66c2; }
+.ft-todo-toggle-open { background:#0a66c2; border-color:#0a66c2; color:#fff; }
+.ft-todo-ctx { margin:6px 0 2px 22px; border:1px solid rgba(0,0,0,.12); border-radius:8px; background:#fafbfc; padding:8px 10px; max-height:280px; overflow-y:auto; }
+.ft-ctx-chat { font-size:11px; font-weight:600; color:#555; margin-bottom:6px; }
+.ft-ctx-line { display:flex; gap:6px; font-size:12px; padding:4px 6px; border-radius:6px; line-height:1.5; }
+.ft-ctx-hit { background:#e8f1fb; outline:1px solid rgba(10,102,194,.25); }
+.ft-ctx-time { flex-shrink:0; color:#999; font-size:11px; font-variant-numeric:tabular-nums; padding-top:1px; }
+.ft-ctx-sender { flex-shrink:0; color:#0a66c2; font-weight:500; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ft-ctx-text { word-break:break-word; color:#333; }
+.ft-ctx-hit-tag { flex-shrink:0; margin-left:auto; align-self:center; }
+.ft-ctx-empty { font-size:12px; color:#888; padding:8px 2px; }
+.ft-ctx-err { color:#b91c1c; }
 .ft-err { background:#fdecea; color:#c0392b; padding:8px 10px; border-radius:7px; margin:8px 0; font-size:12px; word-break:break-all; }
 .ft-msg { background:#e6f4ea; color:#1a7f37; padding:8px 10px; border-radius:7px; margin:8px 0; font-size:12px; }
 .ft-empty { color:#999; text-align:center; padding:24px 0; }
@@ -194,6 +207,7 @@ window.__ModuleLoader__.load({
       todoSeenAll: '/api/feishu-todo/todo-seen-all',
       todoRestore: '/api/feishu-todo/todo-restore',
       todoAsk: '/api/feishu-todo/todo-ask',
+      todoContext: '/api/feishu-todo/todo-context',
       notifyAck: '/api/feishu-todo/notify-ack',
       chatsSearch: '/api/feishu-todo/chats/search',
       authStart: '/api/feishu-todo/auth/start',
@@ -267,6 +281,9 @@ window.__ModuleLoader__.load({
       const [askQ, setAskQ] = React.useState('')
       const [askBusy, setAskBusy] = React.useState(false)
       const [chat, setChat] = React.useState([]) // 多轮对话消息 [{role:'user'|'assistant', content, error?, pending?}]
+      const [expandedKey, setExpandedKey] = React.useState('') // 展开详情的待办 key
+      const [ctxMap, setCtxMap] = React.useState({}) // key -> {chat, context, error?} 聊天上下文缓存
+      const [ctxLoading, setCtxLoading] = React.useState('') // 正在加载的 key
       const askBodyRef = React.useRef(null) // 对话区滚动容器
 
       async function refresh() {
@@ -465,6 +482,22 @@ window.__ModuleLoader__.load({
       function clearChat() {
         setChat([])
         setAskQ('')
+      }
+
+      // 展开/收起待办详情：加载关联聊天上下文（缓存）
+      function toggleCtx(key, t) {
+        if (expandedKey === key) { setExpandedKey(''); return }
+        setExpandedKey(key)
+        if (ctxMap[key]) return
+        setCtxLoading(key)
+        api(API.todoContext, { method: 'POST', body: { key: key } })
+          .then(function (r) {
+            setCtxMap(function (prev) { return Object.assign({}, prev, { [key]: { chat: (r && r.chat) || '', context: (r && r.context) || [], error: '' } }) })
+          })
+          .catch(function (e) {
+            setCtxMap(function (prev) { return Object.assign({}, prev, { [key]: { chat: '', context: [], error: '加载失败：' + ((e && e.message) || String(e)) } }) })
+          })
+          .finally(function () { setCtxLoading('') })
       }
 
       // 新消息/展开面板时滚动到底部
@@ -770,8 +803,37 @@ window.__ModuleLoader__.load({
                                 t.mergedFrom && t.mergedFrom.length ? ' · 已合并 ' + t.mergedFrom.length + ' 条' : ''
                               ),
                               src.chat ? el('div', { className: 'ft-todo-meta' }, '来源: ' + src.chat + (src.time ? ' · ' + src.time : '')) : null
-                            )
-                          )
+                            ),
+                            el('button', {
+                              className: 'ft-todo-toggle' + (expandedKey === t.key ? ' ft-todo-toggle-open' : ''),
+                              title: expandedKey === t.key ? '收起聊天上下文' : '展开关联聊天记录',
+                              onClick: function (e) {
+                                e.stopPropagation()
+                                toggleCtx(t.key)
+                              },
+                            }, expandedKey === t.key ? '▾' : '▸')
+                          ),
+                          expandedKey === t.key ? el('div', { className: 'ft-todo-ctx' },
+                            ctxLoading === t.key
+                              ? el('div', { className: 'ft-ctx-empty' }, '加载聊天上下文…')
+                              : (function () {
+                                  const c = ctxMap[t.key]
+                                  if (!c) return el('div', { className: 'ft-ctx-empty' }, '加载聊天上下文…')
+                                  if (c.error) return el('div', { className: 'ft-ctx-empty ft-ctx-err' }, c.error)
+                                  if (!c.context || !c.context.length) return el('div', { className: 'ft-ctx-empty' }, '该待办暂无关联消息记录。')
+                                  return el('div', { className: 'ft-ctx-list' },
+                                    el('div', { className: 'ft-ctx-chat' }, '关联聊天记录 · ' + (c.chat || '')),
+                                    c.context.map(function (m, mi) {
+                                      return el('div', { key: mi, className: 'ft-ctx-line' + (m.isHit ? ' ft-ctx-hit' : '') },
+                                        el('span', { className: 'ft-ctx-time' }, m.time || ''),
+                                        el('span', { className: 'ft-ctx-sender' }, m.sender || ''),
+                                        el('span', { className: 'ft-ctx-text' }, m.text || ('[' + (m.msgType || '消息') + ']')),
+                                        m.isHit ? el('span', { className: 'ft-badge ft-badge-blue ft-ctx-hit-tag' }, '本条') : null
+                                      )
+                                    })
+                                  )
+                                })()
+                          ) : null
                         )
                       }))
                     })()
